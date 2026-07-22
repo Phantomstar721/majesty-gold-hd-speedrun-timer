@@ -1,79 +1,60 @@
 # Majesty Gold HD - Speedrun Timer
 
-Work-in-progress research repo for a speedrun timer for the Steam version of
-**Majesty Gold HD**.
+Adds a speed-adjusted speedrun timer to the Steam version of **Majesty Gold HD**.
 
-The goal is an in-quest timer that:
-
-- starts automatically when a quest loads,
-- stops automatically when the quest ends,
-- remains visible during the quest result screen,
-- hides everywhere else,
-- tracks speed-adjusted time so default-speed and max-speed runs can be compared,
-- stays accurate even if the visible timer text only refreshes at the game's normal
-  UI cadence.
-
-This is not installable yet. The repo currently captures the hook map and design
-notes needed for the first prototype.
-
-## Timing Model
-
-The timer should not use Majesty's internal simulation clock. Instead, it should
-integrate real elapsed time from `QueryPerformanceCounter` against the current
-game-speed value:
+The timer appears in the Majesty window title bar while a quest is running:
 
 ```text
-adjusted_time += real_elapsed_time * (current_speed / 50)
+Majesty - Speedrun Time: 00:00.000
 ```
 
-Majesty's default game speed is `50`. At default speed, the timer runs in normal
-real time. At max speed, the timer advances proportionally faster. If the player
-changes the speed slider mid-quest, the next timer update uses the new speed.
+## What It Does
 
-## Current Hook Map
+- Starts automatically when a quest loads.
+- Resets to `00:00.000` on each new quest start.
+- Stops and freezes when the quest ends through victory or loss.
+- Uses `QueryPerformanceCounter` real-time measurement rather than Majesty's internal simulation tick.
+- Scales elapsed time by the current game-speed slider value so runs at different game speeds can be compared.
+- Updates correctly if the game-speed slider changes mid-quest.
 
-Known useful addresses in the tested Steam EXE:
+## Install
+
+Close Majesty Gold HD, then run:
 
 ```text
-QueryPerformanceFrequency IAT  0x7351BC
-QueryPerformanceCounter IAT    0x7351C0
-Current speed global           0x7B5304
-Default speed value            50
-
-Remember Game Speed hooks:
-  0x4D90F9
-  0x4D9B4A
-  0x484DD2
-  0x429006
-  0x429019
-
-GPL DeclareVictory handler     0x42F250
-GPL DeclareLoss handler        0x42F3D0
-GPL registration area          0x434F6E..0x434FE1
+Install - Speedrun Timer.bat
 ```
 
-The likely first prototype should:
+The installer looks for Majesty at the default Steam path:
 
-- start/reset the timer from a quest-start or quest-object initialization hook,
-- update the accumulator from a frequent in-quest update or draw hook,
-- stop/freeze the timer from `DeclareVictory` and `DeclareLoss`,
-- keep the frozen value available on the quest result screen.
+```text
+C:\Program Files (x86)\Steam\steamapps\common\Majesty HD
+```
 
-## Open Work
+If your game is installed somewhere else, run the installer script manually:
 
-The unresolved part is display. The timer core can be accurate without the display
-updating every millisecond, but we still need a robust way to draw text during a
-quest and on the result screen without showing it on menus.
+```powershell
+python scripts\install_speedrun_timer.py --game-path "D:\Path\To\Majesty HD"
+```
 
-Candidate display paths:
+## Uninstall
 
-- hook an existing in-game text rendering path,
-- add a small game UI element through an existing panel/controller,
-- use a companion overlay only if an internal draw hook proves too brittle.
+Close Majesty Gold HD, then run:
 
-The preferred solution is still an EXE patch like the other Majesty Gold HD QoL
-utilities, not a Steam Workshop mod.
+```text
+Uninstall - Restore Stock Timer.bat
+```
+
+For a custom game path:
+
+```powershell
+python scripts\restore_speedrun_timer.py --game-path "D:\Path\To\Majesty HD"
+```
 
 ## Notes
 
-This repo does not contain Majesty game assets or game files.
+- Requires Python 3.
+- The patch modifies `MajestyHD.exe` by adding a reversible `.msrt` section.
+- The installer creates a backup in `_speedrun_timer_originals` the first time it runs.
+- Manual return to the main menu before victory/loss does not currently stop the timer, but the next quest starts from zero.
+- This repo does not include Majesty game files or assets.
