@@ -34,7 +34,7 @@ C:\Program Files (x86)\Steam\steamapps\common\Majesty HD
 If your game is installed somewhere else, run the installer script manually:
 
 ```powershell
-python scripts\install_speedrun_timer.py --game-path "D:\Path\To\Majesty HD"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Install-SpeedrunTimer.ps1 -GamePath "D:\Path\To\Majesty HD"
 ```
 
 ## Uninstall
@@ -48,12 +48,12 @@ Uninstall - Restore Stock Timer.bat
 For a custom game path:
 
 ```powershell
-python scripts\restore_speedrun_timer.py --game-path "D:\Path\To\Majesty HD"
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Restore-SpeedrunTimer.ps1 -GamePath "D:\Path\To\Majesty HD"
 ```
 
 ## Notes
 
-- Requires Python 3.
+- Uses Windows PowerShell. No Python install is required.
 - The patch modifies `MajestyHD.exe` by adding a reversible `.msrt` section.
 - The installer creates a backup in `_speedrun_timer_originals` the first time it runs.
 - Manual return to the main menu before victory/loss does not currently stop the timer, but the next quest starts from zero.

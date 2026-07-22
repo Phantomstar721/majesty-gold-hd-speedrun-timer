@@ -1,7 +1,7 @@
 @echo off
 setlocal
 pushd "%~dp0"
-python scripts\install_speedrun_timer.py
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\Install-SpeedrunTimer.ps1"
 echo.
 pause
 popd
