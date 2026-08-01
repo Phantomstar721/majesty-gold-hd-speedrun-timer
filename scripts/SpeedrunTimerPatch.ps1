@@ -5,6 +5,9 @@ $SectionName = ".msrt"
 $PatchRawSize = 0x2000
 $PatchVirtualSize = 0x2000
 $BackupDirName = "_speedrun_timer_originals"
+
+# PE section characteristics: code, execute, read, write. The section holds runtime scratch state.
+$SectionCharacteristics = 3758096416  # 0xE0000020: code, execute, read, write
 $BackupName = "MajestyHD.exe.before-speedrun-timer"
 
 $ImageBase = 0x400000
@@ -65,9 +68,39 @@ $TimeGetTimeCalls = @(
     @(0x6CFC84,0x2CF084)
 )
 
-$MskpStartJumps = @(
-    @(0x810429, 0x3C1C29, [byte[]]@(0xE9,0xDE,0x8B,0xC1,0xFF), 0x42900C, 0x100),
-    @(0x810469, 0x3C1C69, [byte[]]@(0xE9,0xB1,0x8B,0xC1,0xFF), 0x42901F, 0x130)
+# Quest-start trigger.
+#
+# The timer starts on Majesty's new-quest game-speed object init at VA 0x429006
+# and 0x429019. Both sites hold the same 6-byte instruction, and both continue
+# at site + 6. There are two ways to get control there:
+#
+#   Bridge mode - Remember Game Speed (.mskp) already owns both sites. Its two
+#                 object-init blocks sit at .mskp blob offsets 0x400 and 0x440
+#                 and end with a jump back to the game at blob +0x29. We
+#                 redirect those two tail jumps into our own stubs.
+#
+#   Direct mode - .mskp is absent, so we hook the two .text sites ourselves.
+#                 Our stub must replay the displaced instruction, because there
+#                 is no Remember Game Speed block ahead of us to have done it.
+#
+# The two modes are mutually exclusive: if .mskp is installed it already owns
+# the .text sites, so direct mode can never collide with it.
+#
+# Section placement is resolved from the PE section table at install time. Do
+# not hardcode .mskp addresses here; they depend on the user's install order.
+$MskpSectionName = ".mskp"
+
+# mov [eax+0x98], esi
+$SpeedObjectInitOriginal = [byte[]]@(0x89,0xB0,0x98,0x00,0x00,0x00)
+
+$DirectStartHooks = @(
+    @{ Va = 0x429006; Offset = 0x28406; ReturnVa = 0x42900C; BlobTarget = 0x140 },
+    @{ Va = 0x429019; Offset = 0x28419; ReturnVa = 0x42901F; BlobTarget = 0x160 }
+)
+
+$MskpBridgeSites = @(
+    @{ BlobOffset = 0x429; ReturnVa = 0x42900C; BlobTarget = 0x100 },
+    @{ BlobOffset = 0x469; ReturnVa = 0x42901F; BlobTarget = 0x130 }
 )
 
 function Read-U16 {
@@ -87,6 +120,7 @@ function Align-Value {
 
 function New-RelativeCallBytes {
     param([uint32]$SourceVa, [uint32]$TargetVa)
+
     $relative = [int]([int64]$TargetVa - ([int64]$SourceVa + 5))
     $result = New-Object byte[] 5
     $result[0] = 0xE8
@@ -96,6 +130,7 @@ function New-RelativeCallBytes {
 
 function New-RelativeJumpBytes {
     param([uint32]$SourceVa, [uint32]$TargetVa)
+
     $relative = [int]([int64]$TargetVa - ([int64]$SourceVa + 5))
     $result = New-Object byte[] 5
     $result[0] = 0xE9
@@ -104,25 +139,34 @@ function New-RelativeJumpBytes {
 }
 
 function New-SectionHeader {
-    param([string]$Name, [uint32]$VirtualSize, [uint32]$Rva, [uint32]$RawSize, [uint32]$RawOffset)
+    param(
+        [string]$Name,
+        [uint32]$VirtualSize,
+        [uint32]$Rva,
+        [uint32]$RawSize,
+        [uint32]$RawOffset
+    )
+
     $bytes = New-Object byte[] 40
     [Text.Encoding]::ASCII.GetBytes($Name).CopyTo($bytes, 0)
     [BitConverter]::GetBytes($VirtualSize).CopyTo($bytes, 8)
     [BitConverter]::GetBytes($Rva).CopyTo($bytes, 12)
     [BitConverter]::GetBytes($RawSize).CopyTo($bytes, 16)
     [BitConverter]::GetBytes($RawOffset).CopyTo($bytes, 20)
-    [BitConverter]::GetBytes([uint32]3758096416).CopyTo($bytes, 36)
+    [BitConverter]::GetBytes([uint32]$SectionCharacteristics).CopyTo($bytes, 36)
     return $bytes
 }
 
 function Get-PeInfo {
     param([byte[]]$Bytes)
+
     $peOffset = Read-U32 $Bytes 0x3C
     $sectionCountOffset = $peOffset + 6
     $sectionCount = Read-U16 $Bytes $sectionCountOffset
     $optionalHeaderSize = Read-U16 $Bytes ($peOffset + 20)
     $optionalHeaderOffset = $peOffset + 24
     $sectionTableOffset = $optionalHeaderOffset + $optionalHeaderSize
+
     $sections = @()
     for ($i = 0; $i -lt $sectionCount; $i++) {
         $off = $sectionTableOffset + ($i * 40)
@@ -137,39 +181,63 @@ function Get-PeInfo {
             RawOffset = Read-U32 $Bytes ($off + 20)
         }
     }
+
     return [pscustomobject]@{
         SectionCountOffset = $sectionCountOffset
         SectionCount = $sectionCount
-        Optional = $optionalHeaderOffset
+        ImageBase = Read-U32 $Bytes ($optionalHeaderOffset + 28)
         SectionAlignment = Read-U32 $Bytes ($optionalHeaderOffset + 32)
         FileAlignment = Read-U32 $Bytes ($optionalHeaderOffset + 36)
         SizeOfImageOffset = $optionalHeaderOffset + 56
+        SizeOfImage = Read-U32 $Bytes ($optionalHeaderOffset + 56)
         SizeOfHeaders = Read-U32 $Bytes ($optionalHeaderOffset + 60)
-        SectionTable = $sectionTableOffset
+        SectionTableOffset = $sectionTableOffset
         Sections = $sections
     }
 }
 
 function Test-BytesEqual {
     param([byte[]]$Bytes, [int]$Offset, [byte[]]$Expected)
-    if ($Offset -lt 0 -or ($Offset + $Expected.Length) -gt $Bytes.Length) { return $false }
+
+    if ($Offset -lt 0 -or ($Offset + $Expected.Length) -gt $Bytes.Length) {
+        return $false
+    }
     for ($i = 0; $i -lt $Expected.Length; $i++) {
-        if ($Bytes[$Offset + $i] -ne $Expected[$i]) { return $false }
+        if ($Bytes[$Offset + $i] -ne $Expected[$i]) {
+            return $false
+        }
     }
     return $true
 }
 
 function Test-ZeroRange {
     param([byte[]]$Bytes, [int]$Offset, [int]$Length)
-    if ($Offset -lt 0 -or ($Offset + $Length) -gt $Bytes.Length) { return $false }
+
+    if ($Offset -lt 0 -or ($Offset + $Length) -gt $Bytes.Length) {
+        return $false
+    }
     for ($i = 0; $i -lt $Length; $i++) {
-        if ($Bytes[$Offset + $i] -ne 0) { return $false }
+        if ($Bytes[$Offset + $i] -ne 0) {
+            return $false
+        }
     }
     return $true
 }
 
 function Write-Bytes {
     param([byte[]]$Bytes, [int]$Offset, [byte[]]$Patch)
+
+    # A null or empty patch means the caller built the wrong thing. PowerShell
+    # evaluates $null.Length to $null, so the loop below would silently write
+    # nothing, leaving a hooked-but-empty code section and a game that jumps
+    # into blank memory. Fail loudly instead of shipping a broken exe.
+    if ($null -eq $Patch -or $Patch.Length -eq 0) {
+        throw ("Write-Bytes received no data for file offset 0x{0:X}. This is an installer bug, not a problem with your game files." -f $Offset)
+    }
+    if ($Offset -lt 0 -or ($Offset + $Patch.Length) -gt $Bytes.Length) {
+        throw ("Write-Bytes range 0x{0:X}..0x{1:X} falls outside the {2}-byte image." -f $Offset, ($Offset + $Patch.Length - 1), $Bytes.Length)
+    }
+
     for ($i = 0; $i -lt $Patch.Length; $i++) {
         $Bytes[$Offset + $i] = $Patch[$i]
     }
@@ -177,21 +245,139 @@ function Write-Bytes {
 
 function Assert-FileWritable {
     param([string]$Path)
+
     $stream = $null
     try {
         $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch {
-        throw "Cannot patch MajestyHD.exe because it is in use or not writable. Close Majesty Gold HD and run this installer again. If the game is closed, right-click the BAT and choose Run as administrator."
+        $name = Split-Path -Leaf $Path
+        throw "Cannot modify $name because it is in use or not writable. Close Majesty Gold HD and try again. If the game is already closed, right-click the BAT and choose Run as administrator."
     } finally {
-        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
     }
 }
 
 function Get-MajestyPath {
     param([string]$RequestedPath)
-    if ($RequestedPath) { return $RequestedPath }
-    if (Test-Path -LiteralPath $DefaultGamePath) { return $DefaultGamePath }
-    throw "Could not find Majesty HD. Re-run with -GamePath ""C:\Path\To\Majesty HD""."
+
+    if ($RequestedPath) {
+        return $RequestedPath
+    }
+    if (Test-Path -LiteralPath $DefaultGamePath) {
+        return $DefaultGamePath
+    }
+
+    # Majesty Gold HD is Steam app 73230.
+    $appId = 73230
+    $searched = New-Object System.Collections.Generic.List[string]
+    $searched.Add($DefaultGamePath)
+
+    # Steam install roots from the registry.
+    $steamRoots = New-Object System.Collections.Generic.List[string]
+    foreach ($key in @(
+        "HKLM:\SOFTWARE\WOW6432Node\Valve\Steam",
+        "HKLM:\SOFTWARE\Valve\Steam",
+        "HKCU:\SOFTWARE\Valve\Steam"
+    )) {
+        try {
+            $installPath = (Get-ItemProperty -LiteralPath $key -ErrorAction Stop).InstallPath
+            if ($installPath) {
+                $steamRoots.Add($installPath)
+            }
+        } catch {
+        }
+    }
+
+    # Every Steam library, including the install roots themselves. A second
+    # drive is the common case this exists for.
+    $libraryRoots = New-Object System.Collections.Generic.List[string]
+    foreach ($steamRoot in $steamRoots) {
+        $libraryRoots.Add($steamRoot)
+        $libraryFile = Join-Path $steamRoot "steamapps\libraryfolders.vdf"
+        if (-not (Test-Path -LiteralPath $libraryFile)) {
+            continue
+        }
+        foreach ($line in Get-Content -LiteralPath $libraryFile) {
+            if ($line -match '"path"\s+"([^"]+)"') {
+                $libraryRoots.Add(($Matches[1] -replace '\\\\', '\'))
+            }
+        }
+    }
+
+    foreach ($libraryRoot in ($libraryRoots | Select-Object -Unique)) {
+        $candidate = Join-Path $libraryRoot "steamapps\common\Majesty HD"
+        $searched.Add($candidate)
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+
+        # The install folder can be named something else. Ask Steam's own
+        # manifest rather than assuming.
+        $manifest = Join-Path $libraryRoot ("steamapps\appmanifest_" + $appId + ".acf")
+        if (-not (Test-Path -LiteralPath $manifest)) {
+            continue
+        }
+        foreach ($line in Get-Content -LiteralPath $manifest) {
+            if ($line -match '"installdir"\s+"([^"]+)"') {
+                $named = Join-Path $libraryRoot ("steamapps\common\" + ($Matches[1] -replace '\\\\', '\'))
+                $searched.Add($named)
+                if (Test-Path -LiteralPath $named) {
+                    return $named
+                }
+            }
+        }
+    }
+
+    $lines = ($searched | Select-Object -Unique | ForEach-Object { "  $_" }) -join [Environment]::NewLine
+    throw (
+        "Could not find Majesty Gold HD." + [Environment]::NewLine +
+        "Looked in:" + [Environment]::NewLine + $lines + [Environment]::NewLine +
+        'Re-run with -GamePath "D:\Path\To\Majesty HD".'
+    )
+}
+
+function Save-PreInstallBackup {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$BackupDir,
+        [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$UtilityName
+    )
+
+    if (-not (Test-Path -LiteralPath $BackupDir)) {
+        New-Item -ItemType Directory -Path $BackupDir | Out-Null
+    }
+    if (Test-Path -LiteralPath $BackupPath) {
+        return
+    }
+
+    Copy-Item -LiteralPath $SourcePath -Destination $BackupPath
+
+    # Say plainly what this copy is. It is NOT a stock game file, and the
+    # uninstaller never reads it: uninstalling reverses this utility's own byte
+    # changes. Without this note the filename alone implies otherwise.
+    $leaf = Split-Path -Leaf $BackupPath
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $note = @"
+$leaf
+
+A copy of MajestyHD.exe taken immediately before $UtilityName was first
+installed, on $stamp.
+
+This is NOT guaranteed to be an unmodified Majesty Gold HD executable. It is
+whatever was on disk at that moment, which may already include other patches
+you had installed.
+
+You do not need this file to uninstall. The uninstaller reverses its own byte
+changes and never reads this copy. It is kept only as a convenience snapshot.
+
+For a guaranteed clean executable, use Steam instead:
+  Right-click Majesty Gold HD > Properties > Installed Files >
+  Verify integrity of game files
+"@
+    Set-Content -LiteralPath (Join-Path $BackupDir "READ ME - what this file is.txt") -Value $note -Encoding ASCII
 }
 
 function New-SpeedrunPatchBlob {
@@ -315,6 +501,26 @@ function New-SpeedrunPatchBlob {
     Code-Byte 0x60
     Code-Call "timer_start"
     Code-Byte 0x61
+    Code-Raw (New-RelativeJumpBytes (Code-Va) 0x42901F)
+
+    # Direct quest-start stubs, used only when Remember Game Speed is absent.
+    # Unlike the bridge stubs above, these own the .text site outright, so they
+    # replay the displaced instruction before returning. Same shape as the
+    # victory and loss hooks below. 18 bytes each; 0x180 is the next block.
+    Code-Seek 0x140
+    Code-Label "direct_start_one"
+    Code-Byte 0x60
+    Code-Call "timer_start"
+    Code-Byte 0x61
+    Code-Raw $SpeedObjectInitOriginal
+    Code-Raw (New-RelativeJumpBytes (Code-Va) 0x42900C)
+
+    Code-Seek 0x160
+    Code-Label "direct_start_two"
+    Code-Byte 0x60
+    Code-Call "timer_start"
+    Code-Byte 0x61
+    Code-Raw $SpeedObjectInitOriginal
     Code-Raw (New-RelativeJumpBytes (Code-Va) 0x42901F)
 
     Code-Seek 0x180
@@ -516,7 +722,7 @@ function Get-SpeedrunPatchLayout {
         $lastVirtualEnd = [uint32]($last.Rva + [Math]::Max($last.VirtualSize, $last.RawSize))
         $patchRva = Align-Value $lastVirtualEnd ([uint32]$pe.SectionAlignment)
         $patchVa = [uint32]($ImageBase + $patchRva)
-        $patchHeaderOffset = [int]($pe.SectionTable + ($pe.SectionCount * 40))
+        $patchHeaderOffset = [int]($pe.SectionTableOffset + ($pe.SectionCount * 40))
         $patchedFileSize = [int]($patchRaw + $PatchRawSize)
         if (($patchHeaderOffset + 40) -gt $pe.SizeOfHeaders) {
             throw "No room remains in the PE header for another patch section."
@@ -547,8 +753,43 @@ function Get-SpeedrunPatchLayout {
     }
 }
 
+function Get-QuestStartPatches {
+    param([uint32]$PatchVa, $Pe)
+
+    $mskp = $null
+    if ($Pe) {
+        $mskp = $Pe.Sections | Where-Object { $_.Name -eq $MskpSectionName } | Select-Object -First 1
+    }
+
+    if ($mskp) {
+        $mskpVa = [uint32]($ImageBase + $mskp.Rva)
+        $patches = foreach ($site in $MskpBridgeSites) {
+            $siteVa = [uint32]($mskpVa + $site.BlobOffset)
+            [pscustomobject]@{
+                Name     = "Remember Game Speed bridge"
+                Va       = $siteVa
+                Offset   = [int]($mskp.RawOffset + $site.BlobOffset)
+                Original = New-RelativeJumpBytes $siteVa ([uint32]$site.ReturnVa)
+                Patched  = New-RelativeJumpBytes $siteVa ([uint32]($PatchVa + $site.BlobTarget))
+            }
+        }
+        return [pscustomobject]@{ Mode = "bridge"; Patches = @($patches) }
+    }
+
+    $patches = foreach ($site in $DirectStartHooks) {
+        [pscustomobject]@{
+            Name     = "quest-start hook"
+            Va       = [uint32]$site.Va
+            Offset   = [int]$site.Offset
+            Original = $SpeedObjectInitOriginal
+            Patched  = (New-RelativeJumpBytes ([uint32]$site.Va) ([uint32]($PatchVa + $site.BlobTarget))) + [byte[]]@(0x90)
+        }
+    }
+    return [pscustomobject]@{ Mode = "direct"; Patches = @($patches) }
+}
+
 function New-SpeedrunPatchSets {
-    param([uint32]$PatchVa)
+    param([uint32]$PatchVa, $Pe)
 
     $startPatch = (New-RelativeJumpBytes $StartHookVa ([uint32]($PatchVa + 0x100))) + [byte[]]@(0x90,0x90,0x90)
     $oldVictoryPatch = (New-RelativeJumpBytes $VictoryHookVa ([uint32]($PatchVa + 0x140))) + [byte[]]@(0x90,0x90,0x90)
@@ -569,9 +810,7 @@ function New-SpeedrunPatchSets {
     $timePatches = foreach ($entry in $TimeGetTimeCalls) {
         [pscustomobject]@{ Va = [uint32]$entry[0]; Offset = [int]$entry[1]; Patched = (New-RelativeCallBytes ([uint32]$entry[0]) ([uint32]($PatchVa + 0x40))) + [byte[]]@(0x90) }
     }
-    $mskpPatches = foreach ($entry in $MskpStartJumps) {
-        [pscustomobject]@{ Va = [uint32]$entry[0]; Offset = [int]$entry[1]; Original = [byte[]]$entry[2]; Patched = New-RelativeJumpBytes ([uint32]$entry[0]) ([uint32]($PatchVa + $entry[4])); TargetOffset = [int]$entry[4] }
-    }
+    $questStart = Get-QuestStartPatches $PatchVa $Pe
 
     return [pscustomobject]@{
         StartPatch = $startPatch
@@ -579,6 +818,7 @@ function New-SpeedrunPatchSets {
         LegacyQpcPatches = $legacyQpcPatches
         TickPatches = $tickPatches
         TimePatches = $timePatches
-        MskpPatches = $mskpPatches
+        QuestStartMode = $questStart.Mode
+        QuestStartPatches = $questStart.Patches
     }
 }

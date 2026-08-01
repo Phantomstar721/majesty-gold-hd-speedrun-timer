@@ -17,7 +17,7 @@ if (-not (Test-Path -LiteralPath $exePath)) {
 
 [byte[]]$bytes = [IO.File]::ReadAllBytes($exePath)
 $layout = Get-SpeedrunPatchLayout $bytes
-$patches = New-SpeedrunPatchSets $layout.PatchVa
+$patches = New-SpeedrunPatchSets $layout.PatchVa $layout.Pe
 
 foreach ($hook in $patches.Hooks) {
     $matchesOldPatch = $false
@@ -51,9 +51,9 @@ foreach ($patch in $patches.TimePatches) {
         throw ("Unexpected bytes at timeGetTime call file offset 0x{0:X} / VA 0x{1:X}." -f $patch.Offset, $patch.Va)
     }
 }
-foreach ($patch in $patches.MskpPatches) {
+foreach ($patch in $patches.QuestStartPatches) {
     if (-not ((Test-BytesEqual $bytes $patch.Offset $patch.Original) -or (Test-BytesEqual $bytes $patch.Offset $patch.Patched))) {
-        throw ("Unexpected bytes at Remember Game Speed bridge file offset 0x{0:X} / VA 0x{1:X}." -f $patch.Offset, $patch.Va)
+        throw ("Unexpected bytes at {0} file offset 0x{1:X} / VA 0x{2:X}. Another patch may already own this site." -f $patch.Name, $patch.Offset, $patch.Va)
     }
 }
 
@@ -67,12 +67,19 @@ $alreadyInstalled = (
     (($patches.LegacyQpcPatches | Where-Object { -not (Test-BytesEqual $bytes $_.Offset $QpcOriginal) }).Count -eq 0) -and
     (($patches.TickPatches | Where-Object { -not (Test-BytesEqual $bytes $_.Offset $_.Patched) }).Count -eq 0) -and
     (($patches.TimePatches | Where-Object { -not (Test-BytesEqual $bytes $_.Offset $_.Patched) }).Count -eq 0) -and
-    (($patches.MskpPatches | Where-Object { -not (Test-BytesEqual $bytes $_.Offset $_.Patched) }).Count -eq 0)
+    (($patches.QuestStartPatches | Where-Object { -not (Test-BytesEqual $bytes $_.Offset $_.Patched) }).Count -eq 0)
 )
+
+$questStartDescription = if ($patches.QuestStartMode -eq "bridge") {
+    "bridged through Remember Game Speed (.mskp)"
+} else {
+    "hooked directly (Remember Game Speed not installed)"
+}
 
 Write-Host "Majesty Gold HD Speedrun Timer installer"
 Write-Host "Game path: $resolvedGamePath"
 Write-Host "Patch section: $SectionName"
+Write-Host "Quest-start trigger: $questStartDescription"
 if ($DryRun) {
     Write-Host "Dry run: no files will be changed."
 }
@@ -96,12 +103,7 @@ if ($DryRun) {
 
 Assert-FileWritable $exePath
 
-if (-not (Test-Path -LiteralPath $backupDir)) {
-    New-Item -ItemType Directory -Path $backupDir | Out-Null
-}
-if (-not (Test-Path -LiteralPath $backupPath)) {
-    Copy-Item -LiteralPath $exePath -Destination $backupPath
-}
+Save-PreInstallBackup $exePath $backupDir $backupPath "Speedrun Timer"
 
 $patchedBytes = New-Object byte[] $layout.PatchedFileSize
 [Array]::Copy($bytes, 0, $patchedBytes, 0, $bytes.Length)
@@ -127,7 +129,7 @@ foreach ($patch in $patches.TickPatches) {
 foreach ($patch in $patches.TimePatches) {
     Write-Bytes $patchedBytes $patch.Offset $patch.Patched
 }
-foreach ($patch in $patches.MskpPatches) {
+foreach ($patch in $patches.QuestStartPatches) {
     Write-Bytes $patchedBytes $patch.Offset $patch.Patched
 }
 

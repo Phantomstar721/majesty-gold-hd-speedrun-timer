@@ -56,5 +56,38 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Restore-SpeedrunTime
 - Uses Windows PowerShell. No Python install is required.
 - The patch modifies `MajestyHD.exe` by adding a reversible `.msrt` section.
 - The installer creates a backup in `_speedrun_timer_originals` the first time it runs.
+- Works on a clean install, and alongside the Majesty QoL Utilities. The
+  installer prints which quest-start trigger it chose:
+  - `hooked directly` on a game without Remember Game Speed.
+  - `bridged through Remember Game Speed (.mskp)` when that utility is present,
+    since it already owns the same two code sites.
+
+  Either way the timer behaves identically. Install order does not matter.
 - Manual return to the main menu before victory/loss does not currently stop the timer, but the next quest starts from zero.
 - This repo does not include Majesty game files or assets.
+
+## Non-default game location
+
+The installer finds Steam automatically, including libraries on other drives and
+an install folder that has been renamed. If it still cannot find the game, run
+the script directly with a path:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Install-SpeedrunTimer.ps1 -GamePath "D:\SteamLibrary\steamapps\common\Majesty HD"
+```
+
+## If you ever need a clean executable
+
+These utilities uninstall by reversing their own byte changes, so you do not
+need a backup copy to remove them. The `_*_originals` folder each installer
+creates is only a convenience snapshot of whatever was on disk beforehand, which
+may already include other patches. It is not a stock game file.
+
+For a guaranteed unmodified executable, let Steam do it:
+
+1. Right-click **Majesty Gold HD** in your Steam library
+2. **Properties** > **Installed Files**
+3. **Verify integrity of game files**
+
+Steam will replace `MajestyHD.exe` with the original. You can then reinstall
+whichever utilities you want.

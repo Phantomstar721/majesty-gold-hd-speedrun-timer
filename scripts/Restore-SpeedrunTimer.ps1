@@ -30,7 +30,7 @@ if (-not $section) {
 }
 
 $patchVa = [uint32]($ImageBase + $section.Rva)
-$patches = New-SpeedrunPatchSets $patchVa
+$patches = New-SpeedrunPatchSets $patchVa $pe
 
 $hookSets = @(
     [pscustomobject]@{ Offset = $StartHookOffset; Original = $StartOriginal; PatchedList = @($patches.StartPatch) },
@@ -47,11 +47,11 @@ $tickPatches = foreach ($entry in $GetTickCountCalls) {
 $timePatches = foreach ($entry in $TimeGetTimeCalls) {
     [pscustomobject]@{ Offset = [int]$entry[1]; Original = $TimeGetTimeOriginal; PatchedList = @((New-RelativeCallBytes ([uint32]$entry[0]) ([uint32]($patchVa + 0x40))) + [byte[]]@(0x90)) }
 }
-$mskpPatches = foreach ($entry in $MskpStartJumps) {
-    [pscustomobject]@{ Offset = [int]$entry[1]; Original = [byte[]]$entry[2]; PatchedList = @(New-RelativeJumpBytes ([uint32]$entry[0]) ([uint32]($patchVa + $entry[4]))) }
+$questStartPatches = foreach ($patch in $patches.QuestStartPatches) {
+    [pscustomobject]@{ Offset = $patch.Offset; Original = $patch.Original; PatchedList = @($patch.Patched) }
 }
 
-$allChecks = @($hookSets + $qpcPatches + $tickPatches + $timePatches + $mskpPatches)
+$allChecks = @($hookSets + $qpcPatches + $tickPatches + $timePatches + $questStartPatches)
 
 $anyInstalled = $false
 foreach ($check in $allChecks) {
@@ -70,7 +70,11 @@ if (-not $anyInstalled) {
 }
 
 if ($section.Index -ne ($pe.SectionCount - 1)) {
-    throw "$SectionName is not the last PE section. Refusing to remove it automatically."
+    throw "$SectionName is not the last section added to MajestyHD.exe, so removing it would break the patches that came after it.
+
+Uninstall in reverse order: whichever utility you installed last must be removed first. Across these tools the section order is .mpst (Remember Active Mods), .mskp (Remember Game Speed), .mczp (Remember Camera Zoom), .msrt (Speedrun Timer) - but only the ones you actually installed will be present.
+
+Run the uninstallers for any utility listed after this one, then run this one again."
 }
 
 foreach ($check in $allChecks) {
@@ -101,6 +105,20 @@ Assert-FileWritable $exePath
 $out = New-Object byte[] $restoredSize
 [Array]::Copy($bytes, 0, $out, 0, $restoredSize)
 foreach ($check in $allChecks) {
+    # Only touch sites this install actually patched. Restoring blindly can
+    # write past the truncated buffer, and can also stomp a site that a
+    # different utility legitimately owns.
+    $isPatched = $false
+    foreach ($patched in $check.PatchedList) {
+        if (Test-BytesEqual $bytes $check.Offset $patched) {
+            $isPatched = $true
+            break
+        }
+    }
+    if (-not $isPatched) { continue }
+    if (($check.Offset + $check.Original.Length) -gt $restoredSize) {
+        throw ("Cannot restore hook at file offset 0x{0:X}; it lies outside the truncated image." -f $check.Offset)
+    }
     Write-Bytes $out $check.Offset $check.Original
 }
 [BitConverter]::GetBytes([uint16]($pe.SectionCount - 1)).CopyTo($out, $pe.SectionCountOffset)
