@@ -56,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Restore-SpeedrunTime
 - Uses Windows PowerShell. No Python install is required.
 - The patch modifies `MajestyHD.exe` by adding a reversible `.msrt` section.
 - The installer creates a backup in `_speedrun_timer_originals` the first time it runs.
-- Works on a clean install, and alongside the Majesty QoL Utilities. The
+- Installs on a clean executable, and alongside the Majesty QoL Utilities. The
   installer prints which quest-start trigger it chose:
   - `hooked directly` on a game without Remember Game Speed.
   - `bridged through Remember Game Speed (.mskp)` when that utility is present,
