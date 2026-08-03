@@ -72,7 +72,7 @@ if (-not $anyInstalled) {
 if ($section.Index -ne ($pe.SectionCount - 1)) {
     throw "$SectionName is not the last section added to MajestyHD.exe, so removing it would break the patches that came after it.
 
-Uninstall in reverse order: whichever utility you installed last must be removed first. Across these tools the section order is .mpst (Remember Active Mods), .mskp (Remember Game Speed), .mczp (Remember Camera Zoom), .msrt (Speedrun Timer) - but only the ones you actually installed will be present.
+Uninstall in reverse order: whichever utility you installed last must be removed first. Across these tools the section order is .mpst (Remember Active Mods), .mskp (Remember Game Speed), .mczp (Remember Camera Zoom), .msrt (Speedrun Timer), .mfsp (Freestyle Custom CAM Fix) - but only the ones you actually installed will be present.
 
 Run the uninstallers for any utility listed after this one, then run this one again."
 }

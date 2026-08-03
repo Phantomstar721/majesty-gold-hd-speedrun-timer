@@ -55,6 +55,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\Restore-SpeedrunTime
 
 - Uses Windows PowerShell. No Python install is required.
 - The patch modifies `MajestyHD.exe` by adding a reversible `.msrt` section.
+- **Uninstall order matters.** A section can only be removed while it is the
+  last one added. If you also installed the **Freestyle Custom CAM Fix**
+  (`.mfsp`), remove that before this one. The uninstaller says so if you get it
+  the wrong way round.
 - The installer creates a backup in `_speedrun_timer_originals` the first time it runs.
 - Installs on a clean executable, and alongside the Majesty QoL Utilities. The
   installer prints which quest-start trigger it chose:
